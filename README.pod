@@ -1,0 +1,17 @@
+=head1 NAME
+
+orphand - Orphan Process Killer
+
+=head2 DESCRIPTION
+
+C<orphand> attempts to act as a simple daemon which monitors children of
+I<spawners>. Simply tell orphand (via a Unix socket) about which proceeses
+should be killed off when a given other process dies, and C<orphand> will comply.
+
+C<orphand> will have no dependencies outside of the normal facilities provided
+by POSIX.
+
+It is intended to be extremely light weight and extremely reliable. Considering
+this is a first release, i doubt its reliability.
+
+See C<client.pl> for client usage.
