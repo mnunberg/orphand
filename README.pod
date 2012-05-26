@@ -2,6 +2,13 @@
 
 orphand - Orphan Process Killer
 
+=head2 SYNOPSIS
+
+    orphand
+
+See C<client.pl> for an example client written in Perl. It spawns several
+children, then dies. C<orphand> reaps them during its next sweep
+
 =head2 DESCRIPTION
 
 C<orphand> attempts to act as a simple daemon which monitors children of
@@ -14,4 +21,31 @@ by POSIX.
 It is intended to be extremely light weight and extremely reliable. Considering
 this is a first release, i doubt its reliability.
 
-See C<client.pl> for client usage.
+C<orphand> is meant to provide an extra safety net if having lingering orphan
+processes is a huge cost (generally because those processes may be using up
+valuable local (CPU,RAM,I/O) resources, and even worse, global resources (TCP
+connections).
+
+It would be nice if orphand was able to automatically handle grandchildren, but
+this would involve using C<ptrace(2)> and a whole other can of worms. Generally
+just dealing with child processes should be easy enough.
+
+=head2 SECURITY
+
+In its current state, orphand is not I<secure>, what this means is that any
+process has the ability to tell orphand to terminate any other process when
+any other arbitrary process terminates. Effectively making it an open proxy
+for C<kill(2)>.
+
+While I do plan to make some kinds of basic sanity checks about how orpahnd
+decides what is and is not a valid request, it is by no means suited for a
+multi-user environment.
+
+While the above should be obvious, it is just a disclaimer.
+
+Additionally, oprhand gets its state information via polling. Until orphand
+is implemnted as a kernel module (and I plan for this to happen one day), there
+is a slight possibility that the PID which was registered as a child would have
+died, and a different, unrelated process would have spawned with the same PID.
+While this is highly unlikely, it is certainly a risk, and certainly producable
+if malicious intent is involved.
