@@ -6,6 +6,7 @@ ht_make(size_t size)
     hashtable *ret = malloc(sizeof(*ret));
     ret->heads = calloc(1, sizeof(struct bucket_head) * size);
     ret->nbuckets = size;
+    ret->elemsize = sizeof(hashbucket);
     return ret;
 }
 
@@ -20,33 +21,49 @@ ht_fetch(const hashtable *ht, pid_t key, int lval)
     int first_empty = -1;
 
     struct bucket_head *bh = ht->heads + hash;
+    DEBUG("Key %d maps to bucket %d", key, hash);
+
+    /**
+     * New bucket
+     */
     if (!bh->fill) {
         if (lval) {
             DEBUG("Initializing empty bucket_head for %d", key);
 
-            bh->array = calloc(1, sizeof(hashbucket) * INITIAL_FILL_SIZE);
+            bh->array = calloc(INITIAL_FILL_SIZE, ht->elemsize);
             assert(bh->array);
             bh->capacity = 64;
             bh->fill = 1;
-            cur = bh->array;
+
+            cur = HBIDX(ht, bh->array, 0);
+
             goto GT_INIT_CUR;
         } else {
             return NULL;
         }
     }
 
+    /**
+     * Bucket exists, and has items
+     */
     for (ii = 0; ii < bh->capacity && ntraversed < bh->fill; ii++) {
-        cur = bh->array + ii;
+
+        cur = HBIDX(ht, bh->array, ii);
+
         if (cur->is_active) {
             if (cur->key == key) {
                 DEBUG("Found key %d", key);
                 return cur;
             }
+
             ntraversed++;
-        } else if (lval  && first_empty != -1) {
-            if (cur->is_active == 0) {
-                first_empty = ii;
-            }
+
+        } else if (lval && first_empty == -1 && cur->is_active == 0) {
+            /**
+             * If we are inserting an item, then mark the first empty slot
+             * in the array, we might use this later
+             */
+            first_empty = ii;
         }
     }
 
@@ -54,42 +71,57 @@ ht_fetch(const hashtable *ht, pid_t key, int lval)
         return NULL;
     }
 
-    if (first_empty) {
+    if (first_empty >= 0) {
+        /**
+         * We have an empty slot, no need to reallocate
+         */
+
         GT_FIRST_EMPTY:
         DEBUG("Have empty space for new item.. (%d)", key);
-
-        cur = bh->array + first_empty;
+        cur = HBIDX(ht, bh->array, first_empty);
         bh->fill++;
         goto GT_INIT_CUR;
     } else {
-        if (ntraversed < bh->capacity) {
+        if (ntraversed < bh->capacity && bh->fill < bh->capacity) {
+            /**
+             * We are inserting here, so we are sure to find something that's
+             * empty.
+             */
             for (; ii < bh->capacity; ii++) {
-                if (bh->array[ii].is_active == 0) {
+
+                if (HBIDX(ht, bh->array, ii)->is_active == 0) {
                     first_empty = ii;
                     goto GT_FIRST_EMPTY;
                 }
             }
+            /* Not reached */
+            fprintf(stderr, "We shouldn't be reaching here!\n");
+            abort();
+
+        } else {
+            /**
+             * We've reached our limit.
+             */
+            size_t offset, oldsize = bh->capacity;
+            assert(bh->capacity == bh->fill);
+            for (offset = 0; (1 << offset) < bh->capacity; offset++);
+
+            bh->capacity = 1 << offset;
+            bh->array = realloc(bh->array, bh->capacity);
+            memset(bh->array + oldsize, 0, bh->capacity - oldsize);
+
+            bh->fill++;
+            cur = HBIDX(ht, bh->array, oldsize);
+            goto GT_INIT_CUR;
         }
-
-        size_t offset, oldsize = bh->capacity;
-        assert(bh->capacity == bh->fill);
-        for (offset = 0; (1 << offset) < bh->capacity; offset++);
-
-        bh->capacity = 1 << offset;
-        bh->array = realloc(bh->array, bh->capacity);
-        memset(bh->array + oldsize, 0, bh->capacity - oldsize);
-
-        bh->fill++;
-        cur = bh->array + oldsize;
-        goto GT_INIT_CUR;
     }
 
     return NULL;
 
     GT_INIT_CUR:
+    memset(cur, 0, ht->elemsize);
     cur->key = key;
     cur->is_active = 1;
-    cur->value = NULL;
     return cur;
 }
 
@@ -102,11 +134,11 @@ ht_delete(hashtable *ht, pid_t key)
         return NULL;
     }
     for (ii = 0; ii < bh->fill; ii++) {
-        hashbucket *cur = bh->array + ii;
+        hashbucket *cur = HBIDX(ht, bh->array, ii);
         if (cur->is_active && cur->key == key) {
             bh->fill--;
             cur->is_active = 0;
-            return cur->value;
+            return &cur->u_value;
         }
     }
     return NULL;
@@ -161,9 +193,14 @@ ht_iternext(ht_iterator *iter)
              * Advance the iterator until we have a valid position..
              */
             DEBUG("Trying to find suitable position..");
-            while (iter->bh->array[iter->aidx].is_active == 0) {
+
+            while (HBIDX(iter->ht,
+                         iter->bh->array,
+                         iter->aidx)->is_active == 0) {
+
                 iter->aidx++;
             }
+
             iter->b_traversed++;
             return 1;
         }
@@ -202,6 +239,6 @@ ht_iternext(ht_iterator *iter)
 void
 ht_iterdel(ht_iterator *iter)
 {
-    iter->bh->array[iter->aidx].is_active = 0;
+    HBIDX(iter->ht, iter->bh->array, iter->aidx)->is_active = 0;
     iter->bh->fill--;
 }

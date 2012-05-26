@@ -5,9 +5,9 @@
 
 struct hashtable;
 
-#define DEFAULT_SIGNAL SIGINT
-#define DEFAULT_PATH "/tmp/orphand.sock"
-#define DEFAULT_SWEEP_INTERVAL 2
+#define ORPHAND_DEFAULT_SIGNAL SIGINT
+#define ORPHAND_DEFAULT_PATH "/tmp/orphand.sock"
+#define ORPHAND_DEFAULT_SWEEP_INTERVAL 2
 
 typedef struct {
     int sock;
@@ -19,7 +19,7 @@ typedef struct {
 typedef struct {
     uint32_t parent;
     uint32_t child;
-    uint16_t action;
+    uint32_t action;
 } orphand_message;
 
 enum {

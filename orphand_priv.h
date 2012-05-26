@@ -36,18 +36,25 @@ typedef struct hashbucket hashbucket;
 struct hashbucket {
     pid_t key;
     int is_active;
-    void *value;
+    union {
+        void *ptr;
+        char inl[1];
+    } u_value;
 };
 
 struct bucket_head {
     size_t fill;
     size_t capacity;
-    struct hashbucket *array;
+    /** block of memory, array of hashbucket subclass objects */
+    char *array;
 };
 
 typedef struct hashtable {
     struct bucket_head *heads;
     size_t nbuckets;
+
+    /** size of each value (inclusive of the hashbucket size itself) */
+    unsigned int elemsize;
 } hashtable;
 
 typedef struct {
@@ -61,6 +68,18 @@ typedef struct {
     int done;
 } ht_iterator;
 
+/**
+ * Because the size of the bucket elements are known only at runtime, our
+ * pointer arithmetic becomes slightly more complex..
+ * This macro gives the hashbucket structure (or rather, the base class) at a
+ * given index, when provided with the parent, array, and index
+ */
+#define HBIDX(ht, a, ix) \
+    ((hashbucket*)(a+(ix*ht->elemsize)))
+
+
+#define HB_ptr(hb) ( (hb)->u_value.ptr )
+#define HB_data(hb) ( (hb)->u_value.inl )
 
 hashtable*
 ht_make(size_t size);
@@ -69,7 +88,7 @@ hashbucket *
 ht_fetch(const hashtable *ht, pid_t key, int lval);
 
 #define ht_store(ht, k, v) \
-    (ht_fetch(ht, k, 1)->value = v)
+    (HB_ptr((ht_fetch(ht, k, 1))) = v)
 
 void *
 ht_delete(hashtable *ht, pid_t key);
@@ -87,9 +106,14 @@ ht_iternext(ht_iterator *iter);
 void
 ht_iterdel(ht_iterator *iter);
 
-#define ht_itercur(iter) ( (iter)->bh->array[ (iter)->aidx] )
-#define ht_iterkey(iter) ht_itercur(iter).key
-#define ht_iterval(iter) ht_itercur(iter).value
+/**
+ * Gets the current bucket of the iterator
+ */
+#define ht_itercur(iter) (HBIDX( (iter)->ht, (iter)->bh->array, (iter)->aidx))
+
+//#define ht_itercur(iter) ( (iter)->bh->array[ (iter)->aidx] )
+#define ht_iterkey(iter) ht_itercur(iter)->key
+#define ht_iterval(iter) ht_itercur(iter)->u_value
 
 /**
  * ffs how many times do i need to do this..

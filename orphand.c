@@ -15,6 +15,16 @@
 #define TOPLEVEL_BUCKET_COUNT 4096
 #define CHILD_BUCKET_COUNT 64
 
+struct child_info {
+    /**
+     * time child was spawned
+     * (used to differentiate between different iterations)
+     */
+    time_t ctime;
+
+
+};
+
 static
 orphand_server Server;
 
@@ -24,14 +34,14 @@ get_pid_table(pid_t pid, int create)
     hashbucket *bucket;
     bucket = ht_fetch(Server.ht, pid, create);
     if (bucket) {
-        if (bucket->value == NULL) {
+        if (HB_ptr(bucket) == NULL) {
             assert(create);
-            bucket->value = ht_make(CHILD_BUCKET_COUNT);
+            HB_ptr(bucket) = ht_make(CHILD_BUCKET_COUNT);
             DEBUG("Created new bucket %p", bucket);
         } else {
-            DEBUG("Have bucket=%p, ht=%p", bucket, bucket->value);
+            DEBUG("Have bucket=%p, ht=%p", bucket, HB_ptr(bucket));
         }
-        return bucket->value;
+        return HB_ptr(bucket);
     }
     return NULL;
 }
@@ -62,20 +72,24 @@ unregister_child(pid_t parent, pid_t child)
 static void
 sweep(void)
 {
-    ht_iterator parent_iter;
-    ht_iterinit(Server.ht, &parent_iter);
+    ht_iterator parents_iter;
+    ht_iterinit(Server.ht, &parents_iter);
 
-    while (ht_iternext(&parent_iter)) {
-        hashtable *children;
+    while (ht_iternext(&parents_iter)) {
+        hashtable *children_ht;
+        hashbucket *children_hb;
         ht_iterator child_iter;
-        pid_t parent_pid = ht_iterkey(&parent_iter);
-        DEBUG("Checking children of %d", parent_pid);
 
+        children_hb = ht_itercur(&parents_iter);
+        pid_t parent_pid = children_hb->key;
+
+        DEBUG("Checking children of %d", parent_pid);
         if (parent_pid < 1 || kill(parent_pid, 0) == 0) {
             continue;
         }
-        children = ht_iterval(&parent_iter);
-        ht_iterinit(children, &child_iter);
+
+        children_ht = HB_ptr(children_hb);
+        ht_iterinit(children_ht, &child_iter);
         while (ht_iternext(&child_iter)) {
             pid_t child_pid = ht_iterkey(&child_iter);
             if (child_pid < 1) {
@@ -85,8 +99,8 @@ sweep(void)
             kill(child_pid, Server.default_signum);
         }
 
-        ht_destroy(children);
-        ht_iterdel(&parent_iter);
+        ht_destroy(children_ht);
+        ht_iterdel(&parents_iter);
     }
 }
 
@@ -110,7 +124,12 @@ get_message_dgram(int sock, orphand_message *out)
 
     nr = recvmsg(sock, &msg, 0);
     if (nr == -1 || nr != 12) {
-        ERROR("Couldn't get message: %s", strerror(errno));
+        if (nr == -1) {
+            ERROR("Couldn't get message, (recvmsg == -1): %s",
+                  strerror(errno));
+        } else {
+            ERROR("Expected 12 bytes, got %d instead", (int)nr);
+        }
         out->parent = 0;
     }
 }
@@ -237,8 +256,8 @@ int main(int argc, char **argv)
     { 0 }
     };
 
-    Server.default_signum = DEFAULT_SIGNAL;
-    Server.sweep_interval = DEFAULT_SWEEP_INTERVAL;
+    Server.default_signum = ORPHAND_DEFAULT_SIGNAL;
+    Server.sweep_interval = ORPHAND_DEFAULT_SWEEP_INTERVAL;
 
     cliopts_parse_options(entries, argc, argv, &lastidx, NULL);
 
@@ -253,7 +272,7 @@ int main(int argc, char **argv)
     }
 
     if (!path) {
-        path = DEFAULT_PATH;
+        path = ORPHAND_DEFAULT_PATH;
     }
     Server.ht = ht_make(TOPLEVEL_BUCKET_COUNT);
     start_orphand(path, Server.sweep_interval);
