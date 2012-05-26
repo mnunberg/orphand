@@ -49,3 +49,23 @@ is a slight possibility that the PID which was registered as a child would have
 died, and a different, unrelated process would have spawned with the same PID.
 While this is highly unlikely, it is certainly a risk, and certainly producable
 if malicious intent is involved.
+
+=head2 GOODIES
+
+There is also a library C<orphand-forkwait.so> intended to be used as a
+C<LD_PRELOAD> injection, as so
+
+    LD_PRELOAD=/path/to/orphand-forkwait.so program
+
+You may also specify the path to the socket for the library by setting
+C<ORPHAND_SOCKET> in the environment.
+
+The library works by overriding calls to C<fork(2)>, C<waitpid(2)> and
+C<wait(2)> with variants that register and unregister PIDs, as appropriate.
+Using this library eliminates the need to re-write an application in order
+to notify C<orphand> about its process events.
+
+The library then calls the 'next' real version of the system call, and
+for this it relies on being able to find the system's C library, currently
+hard-coded as C<libc.so.6>. It should be changed to suit your platform's
+needs (i think it's C<libSystem.dylib> on darwin, for example).
