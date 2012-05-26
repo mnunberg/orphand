@@ -155,7 +155,6 @@ ht_iternext(ht_iterator *iter)
 
     while (1) {
         iter->aidx++;
-//        DEBUG("At head %d, aidx=%d", iter->bidx, iter->aidx);
         if (iter->aidx < iter->bh->capacity &&
                 iter->b_traversed < iter->b_remaining) {
             /**

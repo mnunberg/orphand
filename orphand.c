@@ -10,22 +10,19 @@
 #include <sys/time.h>
 #include <inttypes.h>
 
-#include <pthread.h>
-
+#include "contrib/cliopts.h"
 
 #define TOPLEVEL_BUCKET_COUNT 4096
 #define CHILD_BUCKET_COUNT 64
 
-static hashtable *global_entries;
-static int sweep_interval = 2;
-static int default_signum = SIGINT;
-#define SIGNAL_TO_SEND default_signum
+static
+orphand_server Server;
 
 static hashtable *
 get_pid_table(pid_t pid, int create)
 {
     hashbucket *bucket;
-    bucket = ht_fetch(global_entries, pid, create);
+    bucket = ht_fetch(Server.ht, pid, create);
     if (bucket) {
         if (bucket->value == NULL) {
             assert(create);
@@ -66,7 +63,7 @@ static void
 sweep(void)
 {
     ht_iterator parent_iter;
-    ht_iterinit(global_entries, &parent_iter);
+    ht_iterinit(Server.ht, &parent_iter);
 
     while (ht_iternext(&parent_iter)) {
         hashtable *children;
@@ -85,7 +82,7 @@ sweep(void)
                 continue;
             }
             INFO("Dead parent %d: Killing %d", parent_pid, child_pid);
-            kill(child_pid, SIGNAL_TO_SEND);
+            kill(child_pid, Server.default_signum);
         }
 
         ht_destroy(children);
@@ -111,8 +108,8 @@ get_message_dgram(int sock, orphand_message *out)
     msg.msg_iov = iov;
     msg.msg_iovlen = 3;
 
-    nr = recvmsg(sock, &msg, MSG_WAITALL);
-    if (nr == -1) {
+    nr = recvmsg(sock, &msg, 0);
+    if (nr == -1 || nr != 12) {
         ERROR("Couldn't get message: %s", strerror(errno));
         out->parent = 0;
     }
@@ -125,6 +122,8 @@ process_message(const orphand_message *msg)
         register_child(msg->parent, msg->child);
     } else if (msg->action == ORPHAND_ACTION_UNREGISTER) {
         unregister_child(msg->parent, msg->child);
+    } else if (msg->action == ORPHAND_ACTION_PING) {
+        ERROR("Ping not yet handled!");
     } else {
         ERROR("Received unknown code %d", msg->action);
     }
@@ -160,7 +159,7 @@ static void start_orphand(const char *path,
                           int interval)
 {
     struct timeval last_sweep;
-    int sock;
+    int sock, maxfd;
     orphand_message msg;
     unlink(path);
     sock = setup_socket(path);
@@ -177,15 +176,11 @@ static void start_orphand(const char *path,
 
     memset(&last_sweep, 0, sizeof(last_sweep));
     struct timeval tmo = { 0, 0 };
-
+    maxfd = sock + 1;
     while (1) {
 
-        /**
-         * figure out how much time we have remaining..
-         */
-
         outfds = origfds;
-        select(sock+1,
+        select(maxfd,
                &outfds,
                NULL,
                NULL,
@@ -217,94 +212,50 @@ static void start_orphand(const char *path,
 
 int Orphand_Loglevel = LOGLVL_INFO;
 
-static void
-print_help(const char *progname)
-{
-    fprintf(stderr, "USAGE: %s OPTIONS\n", progname);
-    fprintf(stderr, "debug=LEVEL [ specify level. Higher is more verbose ]\n");
-    fprintf(stderr, "signal=SIG [ default signal to send to orphans ]\n");
-    fprintf(stderr, "path=PATH [ path for unix socket ]\n");
-
-}
-
 int main(int argc, char **argv)
 {
     /**
      * ffs, let's implement our own arg parser. why do all other interfaces
      * have to suck so much
      */
-    char kbuf[4096] = { 0 };
+
     char *path = NULL;
-    char *emsg = NULL;
-    int ii, is_ok = 1;
-    if (argc == 2 &&
-            (strcmp("--help", argv[1]) == 0 ||
-            strcmp("-h", argv[1]) == 0 ||
-            strcmp("-?", argv[1]) == 0)) {
-        print_help(argv[0]);
-        exit(0);
-    }
+    int lastidx;
 
-    for (ii = 1; ii < argc; ii++) {
-        char *vbuf = NULL;
-        strcpy(kbuf, argv[ii]);
+    cliopts_entry entries[] = {
+    { 'd', "debug", CLIOPTS_ARGT_INT, &Orphand_Loglevel,
+            "debug level (higher is more verbose)" },
 
-        for (vbuf = kbuf; *vbuf; vbuf++) {
-            if (*vbuf == '=') {
-                *vbuf = '\0';
-                vbuf++;
-                break;
-            }
-        }
+    { 'f', "socket", CLIOPTS_ARGT_STRING, &path, "Socket path"},
 
-        if (vbuf == NULL || *vbuf == '\0') {
-            emsg = "expected key=value format";
-            is_ok = 0;
-            break;
-        }
+    { 'i', "interval", CLIOPTS_ARGT_INT, &Server.sweep_interval,
+            "Polling interval for orphan processes" },
 
-        if (strcmp(kbuf, "debug") == 0 ) {
-            if (sscanf(vbuf, "%d", &Orphand_Loglevel) != 1) {
-                emsg = "Expected level for debugging";
-                is_ok = 0;
-                break;
-            }
-        } else if (strcmp(kbuf, "path") == 0) {
-            size_t vlen = strlen(vbuf);
-            path = malloc(vlen+1);
-            path[vlen] = 0;
-            strcpy(path, vbuf);
+    { 'S', "signal", CLIOPTS_ARGT_INT, &Server.default_signum,
+           "Signal number to send to orphan processes" },
 
-        } else if (strcmp(kbuf, "signal") == 0) {
-            if (sscanf(vbuf, "%d", &default_signum) != 1) {
-                emsg = "signal= need a signal";
-                is_ok = 0;
-                break;
-            }
-            if (default_signum < 0 || default_signum > 32) {
-                emsg = "Invalid signal. Must be 0 < SIGNAL < 32";
-                is_ok = 0;
-                break;
-            }
-        } else {
-            emsg = "Unrecognized option";
-            is_ok = 0;
-            break;
-        }
-    }
+    { 0 }
+    };
 
-    if (!is_ok) {
-        fprintf(stderr,
-                "Error parsing options (at %s): %s\n", kbuf, emsg);
-        print_help(argv[0]);
+    Server.default_signum = DEFAULT_SIGNAL;
+    Server.sweep_interval = DEFAULT_SWEEP_INTERVAL;
+
+    cliopts_parse_options(entries, argc, argv, &lastidx, NULL);
+
+    if (Server.default_signum < 0 || Server.default_signum > 32) {
+        fprintf(stderr, "Signal number must be > 0 && < 32\n");
         exit(1);
+    }
 
+    if (Server.sweep_interval < 1) {
+        fprintf(stderr, "Sweep interval must be >= 1\n");
+        exit(1);
     }
 
     if (!path) {
-        path = "/tmp/orphand.sock";
+        path = DEFAULT_PATH;
     }
-    global_entries = ht_make(TOPLEVEL_BUCKET_COUNT);
-    start_orphand(path, sweep_interval);
+    Server.ht = ht_make(TOPLEVEL_BUCKET_COUNT);
+    start_orphand(path, Server.sweep_interval);
     return 0;
 }
