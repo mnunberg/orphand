@@ -543,8 +543,6 @@ cliopts_parse_options(cliopts_entry *entries,
             fprintf(stderr,
                     "Option %s requires argument\n",
                     ctx.current_key);
-
-            print_help(&ctx, settings->progname);
         }
         goto GT_RET;
     }
