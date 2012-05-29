@@ -14,6 +14,7 @@
 #include <sys/un.h>
 #include <sys/types.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
