@@ -9,27 +9,20 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <inttypes.h>
+#include <procstat.h>
 
-#include "contrib/cliopts.h"
+#include <contrib/cliopts.h>
+
+static struct procstat Orphand_pst_dummy;
 
 #define EMBHT_API static
 #define EMBHT_KEY_SIZE sizeof(pid_t)
-#define EMBHT_VALUE_SIZE sizeof(void*)
+#define EMBHT_VALUE_SIZE sizeof(Orphand_pst_dummy.pst_starttime)
 
-#include "contrib/embht.c"
+#include <contrib/embht.c>
 
 #define TOPLEVEL_BUCKET_COUNT 4096
 #define CHILD_BUCKET_COUNT 64
-
-struct child_info {
-    /**
-     * time child was spawned
-     * (used to differentiate between different iterations)
-     */
-    time_t ctime;
-
-
-};
 
 typedef embht_table embht_table;
 
@@ -59,9 +52,18 @@ register_child(pid_t parent, pid_t child)
 {
     embht_table *ht = get_pid_table(parent, 1);
     embht_entry *ent;
+    struct procstat pstb;
+
     assert(ht);
+
+    if ( procstat(child, &pstb) != 0 ) {
+        fprintf(stderr, "Orphand: procstat(%d) failed with %d,%d\n",
+                child, pstb.lib_error, pstb.sys_error);
+        return;
+    }
+
     ent = embht_fetchi(ht, child, 1);
-    ent->u_value.ptr = (void*)1;
+    *(uint64_t*)(ent->u_value.value) = pstb.pst_starttime;
 }
 
 static void
@@ -71,6 +73,7 @@ unregister_child(pid_t parent, pid_t child)
     if (!ht) {
         return;
     }
+    DEBUG("Unregistering %d", child);
     embht_deletei(ht, child);
 }
 
@@ -89,6 +92,7 @@ sweep(void)
         embht_table *children_ht;
         embht_entry *children_hb;
         embht_iterator child_iter;
+        struct procstat pstb;
 
         children_hb = embht_itercur(&parents_iter);
         pid_t parent_pid = children_hb->key.u_kdata.kd32;
@@ -97,17 +101,34 @@ sweep(void)
         if (parent_pid < 1 || kill(parent_pid, 0) == 0) {
             continue;
         }
-
         children_ht = children_hb->u_value.ptr;
         embht_iterinit(children_ht, &child_iter);
         while (embht_iternext(&child_iter)) {
+
+            uint64_t child_start =
+                    *(uint64_t*)(embht_itercur(&child_iter)->u_value.value);
+
             pid_t child_pid = embht_itercur(&child_iter)->key.u_kdata.kd32;
+
             if (child_pid < 1) {
                 continue;
             }
+
+            if (procstat(child_pid, &pstb) != 0) {
+                fprintf(stderr, "procstat(%d) (%d,%d)\n",
+                        child_pid, pstb.lib_error, pstb.sys_error);
+                continue;
+            }
+
+            if (pstb.pst_starttime != child_start) {
+                INFO("PID %d found but start times differ", child_pid);
+                continue;
+            }
+
             INFO("Dead parent %d: Killing %d", parent_pid, child_pid);
             kill(child_pid, Server.default_signum);
         }
+
         embht_destroy(children_ht);
         embht_iterdel(&parents_iter);
     }
@@ -264,6 +285,8 @@ int main(int argc, char **argv)
 
     { 0 }
     };
+
+    Orphand_pst_dummy.lib_error = 0; /* just so we don't get warnings */
 
     Server.default_signum = ORPHAND_DEFAULT_SIGNAL;
     Server.sweep_interval = ORPHAND_DEFAULT_SWEEP_INTERVAL;
