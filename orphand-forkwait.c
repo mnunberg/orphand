@@ -6,6 +6,9 @@
  * in turn call the SYS_ variants directly via syscall(2).
  */
 
+#ifdef __linux__
+#define _GNU_SOURCE
+#endif /* __linux__ */
 
 #include "orphand.h"
 
@@ -19,9 +22,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <dlfcn.h>
 
 #define PROGNAME "orphand-forkwait.so"
+
+
 
 #ifndef LIBC_NAME
 #define LIBC_NAME "libc.so.6"
@@ -31,20 +35,35 @@ static pid_t (*real_wait)(int*);
 static pid_t (*real_waitpid)(pid_t,int*,int);
 static pid_t (*real_fork)(void);
 
+
+
+
 /**
  * Because of possible thread safety issues, I can't think of any nice
  * way to cache any of this information..
  */
 
+
+
 static void __attribute__((constructor))
 init_real_functions(void)
 {
-    void *libc_handle = dlopen(LIBC_NAME, RTLD_LAZY);
+    void *libc_handle;
+
+#ifdef __GLIBC__
+#define _GNU_SOURCE
+#include <dlfcn.h>
+    libc_handle = RTLD_NEXT;
+#else
+#include <dlfcn.h>
+    libc_handle = dlopen(LIBC_NAME, RTLD_LAZY);
     if (!libc_handle) {
         fprintf(stderr, "%s: Couldn't load '%s' (%s)\n",
                 PROGNAME, LIBC_NAME, dlerror());
         abort();
     }
+#endif /* __linux__ */
+
 #define load_assert(base) \
     real_##base = dlsym(libc_handle, #base); \
     if (!real_##base) { \
