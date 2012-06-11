@@ -12,6 +12,12 @@
 
 #include "contrib/cliopts.h"
 
+#define EMBHT_API static
+#define EMBHT_KEY_SIZE sizeof(pid_t)
+#define EMBHT_VALUE_SIZE sizeof(void*)
+
+#include "contrib/embht.c"
+
 #define TOPLEVEL_BUCKET_COUNT 4096
 #define CHILD_BUCKET_COUNT 64
 
@@ -25,23 +31,25 @@ struct child_info {
 
 };
 
+typedef embht_table embht_table;
+
 static
 orphand_server Server;
 
-static hashtable *
+static embht_table *
 get_pid_table(pid_t pid, int create)
 {
-    hashbucket *bucket;
-    bucket = ht_fetch(Server.ht, pid, create);
-    if (bucket) {
-        if (HB_ptr(bucket) == NULL) {
+    embht_entry *ent;
+    ent = embht_fetchi(Server.ht, pid, 1);
+    if (ent) {
+        if (ent->u_value.ptr == NULL) {
             assert(create);
-            HB_ptr(bucket) = ht_make(CHILD_BUCKET_COUNT);
-            DEBUG("Created new bucket %p", bucket);
+            ent->u_value.ptr = embht_make(CHILD_BUCKET_COUNT, 0);
+            DEBUG("Created new bucket %p", ent->u_value.ptr);
         } else {
-            DEBUG("Have bucket=%p, ht=%p", bucket, HB_ptr(bucket));
+            DEBUG("Have bucket=%p, ht=%p", ent, ent->u_value.ptr);
         }
-        return HB_ptr(bucket);
+        return ent->u_value.ptr;
     }
     return NULL;
 }
@@ -49,19 +57,21 @@ get_pid_table(pid_t pid, int create)
 static void
 register_child(pid_t parent, pid_t child)
 {
-    hashtable *ht = get_pid_table(parent, 1);
+    embht_table *ht = get_pid_table(parent, 1);
+    embht_entry *ent;
     assert(ht);
-    ht_store(ht, child, (void*)1);
+    ent = embht_fetchi(ht, child, 1);
+    ent->u_value.ptr = (void*)1;
 }
 
 static void
 unregister_child(pid_t parent, pid_t child)
 {
-    hashtable *ht = get_pid_table(parent, 0);
+    embht_table *ht = get_pid_table(parent, 0);
     if (!ht) {
         return;
     }
-    ht_delete(ht, child);
+    embht_deletei(ht, child);
 }
 
 /**
@@ -72,35 +82,34 @@ unregister_child(pid_t parent, pid_t child)
 static void
 sweep(void)
 {
-    ht_iterator parents_iter;
-    ht_iterinit(Server.ht, &parents_iter);
+    embht_iterator parents_iter;
+    embht_iterinit(Server.ht, &parents_iter);
 
-    while (ht_iternext(&parents_iter)) {
-        hashtable *children_ht;
-        hashbucket *children_hb;
-        ht_iterator child_iter;
+    while (embht_iternext(&parents_iter)) {
+        embht_table *children_ht;
+        embht_entry *children_hb;
+        embht_iterator child_iter;
 
-        children_hb = ht_itercur(&parents_iter);
-        pid_t parent_pid = children_hb->key;
+        children_hb = embht_itercur(&parents_iter);
+        pid_t parent_pid = children_hb->key.u_kdata.kd32;
 
         DEBUG("Checking children of %d", parent_pid);
         if (parent_pid < 1 || kill(parent_pid, 0) == 0) {
             continue;
         }
 
-        children_ht = HB_ptr(children_hb);
-        ht_iterinit(children_ht, &child_iter);
-        while (ht_iternext(&child_iter)) {
-            pid_t child_pid = ht_iterkey(&child_iter);
+        children_ht = children_hb->u_value.ptr;
+        embht_iterinit(children_ht, &child_iter);
+        while (embht_iternext(&child_iter)) {
+            pid_t child_pid = embht_itercur(&child_iter)->key.u_kdata.kd32;
             if (child_pid < 1) {
                 continue;
             }
             INFO("Dead parent %d: Killing %d", parent_pid, child_pid);
             kill(child_pid, Server.default_signum);
         }
-
-        ht_destroy(children_ht);
-        ht_iterdel(&parents_iter);
+        embht_destroy(children_ht);
+        embht_iterdel(&parents_iter);
     }
 }
 
@@ -274,7 +283,7 @@ int main(int argc, char **argv)
     if (!path) {
         path = ORPHAND_DEFAULT_PATH;
     }
-    Server.ht = ht_make(TOPLEVEL_BUCKET_COUNT);
+    Server.ht = embht_make(TOPLEVEL_BUCKET_COUNT, 0);
     start_orphand(path, Server.sweep_interval);
     return 0;
 }

@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 
-struct hashtable;
-
 #define ORPHAND_DEFAULT_SIGNAL SIGINT
 #define ORPHAND_DEFAULT_PATH "/tmp/orphand.sock"
 #define ORPHAND_DEFAULT_SWEEP_INTERVAL 2
@@ -13,7 +11,7 @@ typedef struct {
     int sock;
     int sweep_interval;
     int default_signum;
-    struct hashtable *ht;
+    void *ht;
 } orphand_server;
 
 typedef struct {
