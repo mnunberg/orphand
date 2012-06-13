@@ -12,13 +12,16 @@ int
 procstat(pid_t pid, struct procstat *pstb)
 {
     FILE *fp;
-    char path[PATH_MAX];
-    char *buf;
 
+    char path[PATH_MAX];
     char *fields[128] = { NULL };
+
+    char *buf;
+    size_t nbuf;
+
     int ii, ret = 0;
 
-    int nbuf, nfields, bufmax;
+    int nfields, bufmax;
 
     bufmax = sizeof(pstb->buf);
     buf = pstb->buf;
@@ -50,7 +53,7 @@ procstat(pid_t pid, struct procstat *pstb)
     }
 
     nfields = 0;
-    for (ii = nbuf; ii >= 0; ii--) {
+    for (ii = nbuf-1; ii >= 0; ii--) {
         if (buf[ii] == ' ') {
             buf[ii] = '\0';
             fields[nfields++] = buf + ii + 1;
