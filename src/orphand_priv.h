@@ -1,6 +1,16 @@
 #ifndef ORPHAND_PRIV_H_
 #define ORPHAND_PRIV_H_
 
+#define ORPHAND_HAVE_PROCFS
+#define ORPHAND_BUF_MAX (1<<17)
+#define ORPHAND_BUF_SIZE 4096
+
+#define EMBHT_API
+#define EMBHT_KEY_SIZE sizeof(pid_t)
+#define EMBHT_VALUE_SIZE sizeof(uint64_t)
+
+#include "contrib/embhash.h"
+
 #include "orphand.h"
 #include <stdint.h>
 #include <stdlib.h>
@@ -13,6 +23,12 @@ enum {
     LOGLVL_WARN,
     LOGLVL_INFO,
     LOGLVL_DEBUG
+};
+
+enum {
+    SOCKEV_RD = 0x1,
+    SOCKEV_WR = 0x2,
+    SOCKEV_ER = 0x4,
 };
 
 extern int Orphand_Loglevel;
@@ -28,6 +44,49 @@ extern int Orphand_Loglevel;
 #define WARN(...) _log_common(LOGLVL_WARN, __VA_ARGS__)
 #define ERROR(...) _log_common(LOGLVL_ERROR, __VA_ARGS__)
 #define INFO(...) _log_common(LOGLVL_INFO, __VA_ARGS__);
+
+struct orphand_buffer {
+    size_t total;
+    size_t used;
+    size_t pos;
+    char buf[ORPHAND_BUF_SIZE];
+};
+
+typedef struct orphand_client {
+    int sockfd;
+    struct orphand_buffer rcvbuf;
+    struct orphand_buffer sndbuf;
+} orphand_client;
+
+typedef struct {
+    int sock;
+    int sweep_interval;
+    int default_signum;
+    void *ht;
+    void *clients;
+
+    /** Stuff for select() */
+    fd_set fds_rd;
+    fd_set fds_wr;
+
+    int maxfd;
+    int nsock;
+
+    struct timeval tmo;
+} orphand_server;
+
+
+int
+orphand_io_init(orphand_server *srv, const char *path);
+
+void
+orphand_process_message(orphand_server *srv,
+                        orphand_client *cli,
+                        const orphand_message *msg);
+
+void
+orphand_io_iteronce(orphand_server *srv);
+
 
 /**
  * ffs how many times do i need to do this..

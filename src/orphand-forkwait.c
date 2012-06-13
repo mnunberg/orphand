@@ -84,12 +84,12 @@ send_orphand_message(pid_t parent,
                      int action)
 {
     orphand_message msg;
-    struct msghdr mhdr;
+    struct msghdr mhdr = { 0 };
     struct sockaddr_un saddr;
     struct iovec iov[3];
     char *sockpath;
 
-    int sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock == -1) {
         perror(PROGNAME ": socket");
         return;
@@ -99,6 +99,7 @@ send_orphand_message(pid_t parent,
     if (!sockpath) {
         sockpath = ORPHAND_DEFAULT_PATH;
     }
+
 
     saddr.sun_family = AF_UNIX;
     memcpy(saddr.sun_path, sockpath, strlen(sockpath)+1);
@@ -119,13 +120,17 @@ send_orphand_message(pid_t parent,
     memset(&mhdr, 0, sizeof(mhdr));
     mhdr.msg_iov = iov;
     mhdr.msg_iovlen = 3;
-    mhdr.msg_name = (struct sockaddr*)&saddr;
-    mhdr.msg_namelen = sizeof(saddr);
+
+    if (connect(sock, (struct sockaddr*)&saddr, sizeof(saddr)) != 0) {
+        fprintf(stderr, "%s: connect: %s\n", PROGNAME, strerror(errno));
+        goto GT_END;
+    }
 
     if (sendmsg(sock, &mhdr, MSG_WAITALL) == -1) {
         fprintf(stderr, "%s: sendmsg: %s\n", PROGNAME, strerror(errno));
     }
 
+    GT_END:
     close(sock);
 }
 

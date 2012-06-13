@@ -10,14 +10,15 @@
 #include <sys/time.h>
 #include <inttypes.h>
 #include <procstat.h>
+#include <fcntl.h>
+#include <sys/file.h>
 
 #include <contrib/cliopts.h>
 
 static struct procstat Orphand_pst_dummy;
 
-#define EMBHT_API static
-#define EMBHT_KEY_SIZE sizeof(pid_t)
-#define EMBHT_VALUE_SIZE sizeof(Orphand_pst_dummy.pst_starttime)
+static int Orphand_Use_Procfs = 1;
+
 
 #include <contrib/embht.c>
 
@@ -33,7 +34,7 @@ static embht_table *
 get_pid_table(pid_t pid, int create)
 {
     embht_entry *ent;
-    ent = embht_fetchi(Server.ht, pid, 1);
+    ent = embht_fetchi(Server.ht, pid, create);
     if (ent) {
         if (ent->u_value.ptr == NULL) {
             assert(create);
@@ -96,12 +97,28 @@ sweep(void)
 
         children_hb = embht_itercur(&parents_iter);
         pid_t parent_pid = children_hb->key.u_kdata.kd32;
+        children_ht = children_hb->u_value.ptr;
 
         DEBUG("Checking children of %d", parent_pid);
-        if (parent_pid < 1 || kill(parent_pid, 0) == 0) {
-            continue;
+
+        if (parent_pid < 1) {
+            ERROR("Found a parent with a PID < 1");
+            goto GT_CLEAN_PARENT;
         }
-        children_ht = children_hb->u_value.ptr;
+
+        if (kill(parent_pid, 0) == 0) {
+            DEBUG("Parent still alive");
+            continue;
+        } else {
+            int old_errno = errno;
+            if (old_errno != ESRCH) {
+                WARN("Couldn't determine whether %d is alive: %s",
+                     parent_pid,
+                     strerror(old_errno));
+                goto GT_CLEAN_PARENT;
+            }
+        }
+
         embht_iterinit(children_ht, &child_iter);
         while (embht_iternext(&child_iter)) {
 
@@ -129,78 +146,49 @@ sweep(void)
             kill(child_pid, Server.default_signum);
         }
 
-        embht_destroy(children_ht);
+        GT_CLEAN_PARENT:
+        if (children_ht) {
+            embht_destroy(children_ht);
+        }
         embht_iterdel(&parents_iter);
     }
 }
 
-static void
-get_message_dgram(int sock, orphand_message *out)
+void
+orphand_process_message(orphand_server *srv,
+                        orphand_client *cli,
+                        const orphand_message *msg)
 {
-    ssize_t nr;
-    int ii;
-    struct msghdr msg = { 0 };
-    struct iovec iov[3];
-    for ( ii = 0; ii < 3; ii++) {
-        iov[ii].iov_len = 4;
-    }
-
-    iov[0].iov_base = &out->parent;
-    iov[1].iov_base = &out->child;
-    iov[2].iov_base = &out->action;
-
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 3;
-
-    nr = recvmsg(sock, &msg, 0);
-    if (nr == -1 || nr != 12) {
-        if (nr == -1) {
-            ERROR("Couldn't get message, (recvmsg == -1): %s",
-                  strerror(errno));
-        } else {
-            ERROR("Expected 12 bytes, got %d instead", (int)nr);
-        }
-        out->parent = 0;
-    }
-}
-
-static void
-process_message(const orphand_message *msg)
-{
+    INFO("Sock: %d, Action=%d, Parent=%d, Child=%d",
+          cli->sockfd,
+          msg->action,
+          msg->parent,
+          msg->child);
     if (msg->action == ORPHAND_ACTION_REGISTER) {
         register_child(msg->parent, msg->child);
     } else if (msg->action == ORPHAND_ACTION_UNREGISTER) {
         unregister_child(msg->parent, msg->child);
     } else if (msg->action == ORPHAND_ACTION_PING) {
-        ERROR("Ping not yet handled!");
+
+        uint32_t *reply =
+                (uint32_t*)((char*)cli->sndbuf.buf + cli->sndbuf.used);
+        if (cli->sndbuf.total - cli->sndbuf.used < 12) {
+            ERROR("Too little space in send buffer..");
+            return;
+        }
+
+        reply[0] = msg->parent;
+        reply[1] = msg->child;
+        reply[2] = msg->action;
+        cli->sndbuf.used += 12;
+
     } else {
         ERROR("Received unknown code %d", msg->action);
+        ERROR("A=%d,P=%d,C=%d",
+              msg->action,
+              msg->parent,
+              msg->child);
     }
-}
-
-static int
-setup_socket(const char *path)
-{
-    int status,
-        sock = socket(AF_UNIX, SOCK_DGRAM, 0);
-
-    struct sockaddr_un uaddr;
-
-    if (sock == -1) {
-        perror("socket");
-        return -1;
-    }
-
-    memset(&uaddr, 0, sizeof(uaddr));
-    uaddr.sun_family = AF_UNIX;
-    strcpy(uaddr.sun_path, path);
-    status = bind(sock, (struct sockaddr*)&uaddr, sizeof(uaddr));
-    if (status == -1) {
-        perror("bind");
-        close(sock);
-        return -1;
-    }
-    return sock;
 }
 
 
@@ -208,58 +196,34 @@ static void start_orphand(const char *path,
                           int interval)
 {
     struct timeval last_sweep;
-    int sock, maxfd;
-    orphand_message msg;
-    unlink(path);
-    sock = setup_socket(path);
 
-    if (sock == -1) {
-        ERROR("Couldn't setup socket. Exiting..");
-        exit(1);
+    if (orphand_io_init(&Server, path) == -1) {
+        ERROR("Couldn't setup socket. Exiting");
     }
 
-    fd_set origfds, outfds;
-
-    FD_ZERO(&origfds);
-    FD_SET(sock, &origfds);
 
     memset(&last_sweep, 0, sizeof(last_sweep));
-    struct timeval tmo = { 0, 0 };
-    maxfd = sock + 1;
+    memset(&Server.tmo, 0, sizeof(&Server.tmo));
+
+    /* Ignore SIGPIPE */
+    signal(SIGPIPE, SIG_IGN);
+
     while (1) {
+        orphand_io_iteronce(&Server);
 
-        outfds = origfds;
-        select(maxfd,
-               &outfds,
-               NULL,
-               NULL,
-               &tmo);
-
-        if (FD_ISSET(sock, &outfds)) {
-            get_message_dgram(sock, &msg);
-            if (msg.parent) {
-                INFO("Got message: Parent %"PRIu32", "
-                     "Child %"PRIu32", "
-                     "Action %"PRIx32,
-                       msg.parent, msg.child, msg.action);
-            }
-            if (msg.parent) {
-                process_message(&msg);
-            }
-        }
-
-
-        if (!tmo.tv_sec) {
+        if (!Server.tmo.tv_sec) {
             DEBUG("Time to sweep!");
             sweep();
-            tmo.tv_sec = interval;
-            tmo.tv_usec = 0;
+            Server.tmo.tv_sec = interval;
+            Server.tmo.tv_usec = 0;
         }
     }
 
 }
 
 int Orphand_Loglevel = LOGLVL_INFO;
+
+static int Orphand_Lockfd;
 
 int main(int argc, char **argv)
 {
@@ -269,6 +233,7 @@ int main(int argc, char **argv)
      */
 
     char *path = NULL;
+    char *lockfile = NULL;
     int lastidx;
 
     cliopts_entry entries[] = {
@@ -279,9 +244,12 @@ int main(int argc, char **argv)
 
     { 'i', "interval", CLIOPTS_ARGT_INT, &Server.sweep_interval,
             "Polling interval for orphan processes" },
-
+    { 'l', "lockfile", CLIOPTS_ARGT_STRING, &lockfile,
+            "Lockfile to use"},
     { 'S', "signal", CLIOPTS_ARGT_INT, &Server.default_signum,
            "Signal number to send to orphan processes" },
+    { 0,   "no-procfs", CLIOPTS_ARGT_INT, &Orphand_Use_Procfs,
+            "Don't check procfs for timestamps" },
 
     { 0 }
     };
@@ -307,6 +275,24 @@ int main(int argc, char **argv)
         path = ORPHAND_DEFAULT_PATH;
     }
     Server.ht = embht_make(TOPLEVEL_BUCKET_COUNT, 0);
+
+    if (lockfile) {
+        Orphand_Lockfd = open(lockfile, O_RDWR|O_CREAT, 0644);
+        if (Orphand_Lockfd == -1) {
+            perror(lockfile);
+            exit(EXIT_FAILURE);
+        }
+        if (flock(Orphand_Lockfd, LOCK_EX|LOCK_NB) == -1) {
+            fprintf(stderr,
+                    "Couldn't lock %s: %s\n",
+                    lockfile, strerror(errno));
+
+            fprintf(stderr,
+                    "Ensure that no other instance of %s is running\n",
+                    argv[0]);
+            exit(EXIT_FAILURE);
+        }
+    }
     start_orphand(path, Server.sweep_interval);
     return 0;
 }
