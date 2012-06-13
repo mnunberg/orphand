@@ -319,7 +319,11 @@ EMBHT_API
 void
 embht_iterdel(embht_iterator *iter)
 {
-    HBIDX(iter->ht, iter->bh->array, iter->aidx)->key.klen = 0;
+    embht_entry *ent = HBIDX(iter->ht, iter->bh->array, iter->aidx);
+
+    ent->key.klen = 0;
+    memset(&ent->u_value, 0, sizeof(ent->u_value));
+
     iter->bh->fill--;
 }
 
