@@ -50,6 +50,10 @@ died, and a different, unrelated process would have spawned with the same PID.
 While this is highly unlikely, it is certainly a risk, and certainly producable
 if malicious intent is involved.
 
+As an attempt to alleviate the possibility of C<orphand> killing the wrong
+process with the same registration number, C<orphand> checks the creation time
+of each process
+
 =head2 GOODIES
 
 There is also a library C<orphand-forkwait.so> intended to be used as a
@@ -69,3 +73,34 @@ The library then calls the 'next' real version of the system call, and
 for this it relies on being able to find the system's C library, currently
 hard-coded as C<libc.so.6>. It should be changed to suit your platform's
 needs (i think it's C<libSystem.dylib> on darwin, for example).
+
+=head2 MESSAGES
+
+C<orphand> communicates over unix domain stream sockets. The message format
+is as follows (this might change, but considering the application is so simple,
+I don't see why it should).
+
+    uint32_t parent; /* the parent PID */
+    uint32_t child; /* the child PID */
+    uint32_t action; /* the command */
+
+Action is one of the following
+
+=over
+
+=item C<0x1>, REGISTER
+
+This requests that C<child> specified should be terminated when the C<parent>
+itself is no longer alive.
+
+=item C<0x2>, UNREGISTER
+
+Notifies C<orphand> that C<child> has been properly reaped and should not be
+terminated once C<parent> has terminated.
+
+=item C<0x3>, PING
+
+This message simply checks for the responsiveness of C<orphand>.
+If functioning properly, C<orphand> should reply in a timely manner
+
+=back
