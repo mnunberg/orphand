@@ -83,10 +83,10 @@ send_orphand_message(pid_t parent,
                      pid_t child,
                      int action)
 {
-    orphand_message msg;
-    struct msghdr mhdr = { 0 };
+    ssize_t nw, nremaining, wtotal;
+    char buf[12];
+    uint32_t* bufp = (uint32_t*)buf;
     struct sockaddr_un saddr;
-    struct iovec iov[3];
     char *sockpath;
 
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -100,34 +100,36 @@ send_orphand_message(pid_t parent,
         sockpath = ORPHAND_DEFAULT_PATH;
     }
 
-
     saddr.sun_family = AF_UNIX;
     memcpy(saddr.sun_path, sockpath, strlen(sockpath)+1);
 
-    msg.action = action;
-    msg.child = child;
-    msg.parent = parent;
-
-    iov[0].iov_base = &msg.parent;
-    iov[0].iov_len = sizeof(msg.parent);
-
-    iov[1].iov_base = &msg.child;
-    iov[1].iov_len = sizeof(msg.child);
-
-    iov[2].iov_base = &msg.action;
-    iov[2].iov_len = sizeof(msg.action);
-
-    memset(&mhdr, 0, sizeof(mhdr));
-    mhdr.msg_iov = iov;
-    mhdr.msg_iovlen = 3;
+    bufp[0] = parent;
+    bufp[1] = child;
+    bufp[2] = action;
 
     if (connect(sock, (struct sockaddr*)&saddr, sizeof(saddr)) != 0) {
         fprintf(stderr, "%s: connect: %s\n", PROGNAME, strerror(errno));
         goto GT_END;
     }
 
-    if (sendmsg(sock, &mhdr, MSG_WAITALL) == -1) {
-        fprintf(stderr, "%s: sendmsg: %s\n", PROGNAME, strerror(errno));
+    wtotal = 0;
+    nremaining = 12;
+    while (nremaining) {
+        nw = send(sock, buf + wtotal, nremaining, 0);
+        if (nw > 0) {
+            nremaining -= nw;
+            wtotal += nw;
+        } else {
+            if (nw == 0){
+                fprintf(stderr, "%s: Remote closed connection\n", PROGNAME);
+            } else {
+                if (errno == EINTR) {
+                    continue;
+                }
+                fprintf(stderr, "%s: send: %s\n", PROGNAME, strerror(errno));
+            }
+            break;
+        }
     }
 
     GT_END:
