@@ -1,3 +1,7 @@
+#ifndef _POSIX_SOURCE
+#define _POSIX_SOURCE
+#endif
+
 #include "orphand_priv.h"
 
 #include <signal.h>
@@ -24,8 +28,6 @@ static int Orphand_Use_Procfs = 1;
 
 #define TOPLEVEL_BUCKET_COUNT 4096
 #define CHILD_BUCKET_COUNT 64
-
-typedef embht_table embht_table;
 
 static
 orphand_server Server;

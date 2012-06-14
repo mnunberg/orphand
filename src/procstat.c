@@ -8,6 +8,10 @@
 #include <errno.h>
 #include "procstat.h"
 
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
 int
 procstat(pid_t pid, struct procstat *pstb)
 {

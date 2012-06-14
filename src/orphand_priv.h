@@ -9,7 +9,6 @@
 #define EMBHT_KEY_SIZE sizeof(pid_t)
 #define EMBHT_VALUE_SIZE sizeof(uint64_t)
 
-#include "contrib/embhash.h"
 
 #include "orphand.h"
 #include <stdint.h>
@@ -17,6 +16,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/select.h>
+#include <sys/types.h>
+#include "contrib/embhash.h"
+
 
 enum {
     LOGLVL_ERROR = 1,
