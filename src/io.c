@@ -78,9 +78,7 @@ do_sockio(orphand_server *srv,
 
             if (nw == -1) {
                 if (errno == EWOULDBLOCK) {
-                    ob->used -= wtotal;
-                    memmove(ob->buf, ob->buf + wtotal, ob->used);
-
+                    goto GT_MOVE;
                 } else if (errno == EINTR) {
                     continue;
                 } else {
@@ -95,6 +93,12 @@ do_sockio(orphand_server *srv,
                      cli->sockfd);
             }
             break;
+        }
+
+        GT_MOVE:
+        if (wtotal) {
+            ob->used -= wtotal;
+            memmove(ob->buf, ob->buf + wtotal, ob->used);
         }
     }
 
@@ -157,6 +161,9 @@ do_sockio(orphand_server *srv,
     }
 
     if (cli->sndbuf.used) {
+        DEBUG("Socket %d still has %d bytes of data to be written..",
+              cli->sockfd,
+              cli->sndbuf.used);
         ret |= SOCKEV_WR;
     }
     return ret;
